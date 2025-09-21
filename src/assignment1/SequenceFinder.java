@@ -5,159 +5,144 @@ import java.util.*;
 public class SequenceFinder {
 
     /**
-     *  COMP4500 Assignment 1 - Part B
-     *  Muhammad Fiqo Anugrah - 48298975
+     * COMP4500 Assignment 1 – Part B
+     * Muhammad Fiqo Anugrah – 48298975
+     *
+     * Note:
+     * - The plan must always finish with a DirectInstall of the new facility.
+     * - If there’s already some site that approves the facility and has space,
+     *   then we can just install it straight away.
+     * - Otherwise I need to “make space” by relocating other facilities.
+     *   I picture this as the empty slot moving around between sites whenever I relocate.
+     * - Since every move has a positive cost, Dijkstra is a natural fit to find
+     *   the cheapest way of creating space at a site that approves the new facility.
      */
-
     public static List<Action> findSequence(HashMap<Site, HashSet<Facility>> configuration,
                                             Facility newFacility) {
 
-        // - The sequence must always end with a DirectInstall of the new facility.
-        // - If there is already a site that approves the facility and has free space,
-        //   then that’s the answer straight away
-        // - If not, then I have to make space at some approved site.
-        //   I think of the empty slot like it “moves” between sites every time
-        //   I relocate a facility
-        // - Since all costs are positive, Dijkstra is the natural way to find
-        //   the cheapest path that brings the empty slot to a valid target.
-
+        // Step 1: collect the list of sites and give them indices for arrays
         List<Site> sites = new ArrayList<>(configuration.keySet());
         int n = sites.size();
-        Map<Site, Integer> indexOf = new HashMap<>();
-        for (int i = 0; i < n; i++) indexOf.put(sites.get(i), i);
+        Map<Site, Integer> siteIndex = new HashMap<>();
+        for (int i = 0; i < n; i++) siteIndex.put(sites.get(i), i);
 
-        // First thing I do: mark which sites already have spare capacity
-        boolean[] hasSpare = new boolean[n];
-        for (int i = 0; i < n; i++) {
-            Site s = sites.get(i);
-            hasSpare[i] = configuration.get(s).size() < s.capacity();
-        }
+        // Step 2: Dijkstra setup
+        // dist[i] = min cost to make site i “empty” (has at least one spare slot)
+        int[] dist = new int[n];
+        Arrays.fill(dist, Integer.MAX_VALUE);
 
-        // Case 1: simple case
-        // If some approved site has space already, just install there.
-        Site bestDirectSite = null;
-        int bestDirectCost = Integer.MAX_VALUE;
-        for (int i = 0; i < n; i++) {
-            Site s = sites.get(i);
-            if (s.approved(newFacility) && hasSpare[i]) {
-                int c = s.installationCost(newFacility);
-                if (c < bestDirectCost) {
-                    bestDirectCost = c;
-                    bestDirectSite = s;
-                }
-            }
-        }
-        if (bestDirectSite != null) {
-            return List.of(new Action.DirectInstallAction(newFacility, bestDirectSite));
-        }
+        // For reconstructing the path later:
+        int[] parent = new int[n];              // which site passed the empty slot here
+        Facility[] movedFacility = new Facility[n]; // which facility was moved along that step
+        Arrays.fill(parent, -1);
 
-        // Case 2: harder case, every approved site is full.
-        // I model this as a graph:
-        // - Each site is a node.
-        // - An edge u->v means: I can move some facility y from v into u
-        //   (only if u approves y).
-        //   The cost is removalCost(v,y) + installationCost(u,y).
-        //   After this move, site v becomes the new empty site
-        //   (so the empty slot travels from u to v).
-        // By running Dijkstra from all initially empty sites,
-        // I get the minimum cost to make any other site empty.
-
-        final int INF = Integer.MAX_VALUE / 4;
-        int[] minCost = new int[n];
-        Arrays.fill(minCost, INF);
-
-        Site[] parentSite = new Site[n];            // how the empty slot reached this site
-        Facility[] movedFromHere = new Facility[n]; // which facility was moved out
-
+        // Priority queue holds (cost so far, siteIndex)
         PriorityQueue<int[]> pq = new PriorityQueue<>(Comparator.comparingInt(a -> a[0]));
+
+        // Step 3: initialise base cases
+        // Any site that already has spare capacity starts at cost 0
         for (int i = 0; i < n; i++) {
-            if (hasSpare[i]) {
-                minCost[i] = 0;
-                pq.add(new int[]{0, i});
+            if (configuration.get(sites.get(i)).size() < sites.get(i).capacity()) {
+                dist[i] = 0;
+                pq.offer(new int[]{0, i});
             }
         }
 
+        // Step 4: main Dijkstra loop
+        // Pop the cheapest site that currently has the empty slot
         while (!pq.isEmpty()) {
-            int[] cur = pq.poll();
-            int d = cur[0], ui = cur[1];
-            if (d != minCost[ui]) continue;
-            Site u = sites.get(ui);
+            int[] curr = pq.poll();
+            int cost = curr[0];
+            int emptyIdx = curr[1];
 
-            // Try pulling a facility from each other site v into u
-            for (int vi = 0; vi < n; vi++) {
-                if (vi == ui) continue;
-                Site v = sites.get(vi);
+            // Skip if we already found a cheaper way for this site
+            if (cost > dist[emptyIdx]) continue;
 
-                // I look for the cheapest facility y in v that u can accept
-                Facility bestY = null;
-                int bestW = INF;
-                for (Facility y : configuration.get(v)) {
-                    if (u.approved(y)) {
-                        int w = v.removalCost(y) + u.installationCost(y);
-                        if (w < bestW) {
-                            bestW = w;
-                            bestY = y;
-                        }
+            Site emptySite = sites.get(emptyIdx);
+
+            // Try to pull facilities from other sites into this empty site
+            for (int fullIdx = 0; fullIdx < n; fullIdx++) {
+                if (fullIdx == emptyIdx) continue;
+
+                Site fullSite = sites.get(fullIdx);
+
+                for (Facility f : configuration.get(fullSite)) {
+                    // Only possible if emptySite approves the facility
+                    if (!emptySite.approved(f)) continue;
+
+                    int moveCost = fullSite.removalCost(f) + emptySite.installationCost(f);
+                    int newCost = cost + moveCost;
+
+                    // If this is cheaper, update and push new state
+                    if (newCost < dist[fullIdx]) {
+                        dist[fullIdx] = newCost;
+                        parent[fullIdx] = emptyIdx;
+                        movedFacility[fullIdx] = f;
+                        pq.offer(new int[]{newCost, fullIdx});
                     }
                 }
-                if (bestY == null) continue;
-
-                int nd = d + bestW;
-                if (nd < minCost[vi]) {
-                    minCost[vi] = nd;
-                    parentSite[vi] = u;          // v becomes empty after moving y into u
-                    movedFromHere[vi] = bestY;   // remember which facility I moved
-                    pq.add(new int[]{nd, vi});
-                }
             }
         }
 
-        // Now I choose the target site:
-        // Among sites that approve the new facility,
-        // I take the one with the smallest (cost to empty it + install cost).
-        int bestTargetIdx = -1;
-        int bestTotal = INF;
-        for (int ti = 0; ti < n; ti++) {
-            Site t = sites.get(ti);
-            if (!t.approved(newFacility)) continue;
-            if (minCost[ti] == INF) continue;
-            int total = minCost[ti] + t.installationCost(newFacility);
+        // Step 5: pick the best target site to install newFacility
+        int bestTarget = -1, bestTotal = Integer.MAX_VALUE;
+        for (int i = 0; i < n; i++) {
+            Site site = sites.get(i);
+            if (!site.approved(newFacility)) continue;
+            if (dist[i] == Integer.MAX_VALUE) continue;
+            int total = dist[i] + site.installationCost(newFacility);
             if (total < bestTotal) {
                 bestTotal = total;
-                bestTargetIdx = ti;
+                bestTarget = i;
             }
         }
-        if (bestTargetIdx == -1) {
-            return null; // I cannot create a slot at any valid site
+
+        // If nothing works, return null
+        if (bestTarget == -1) return null;
+
+        // Step 6: reconstruct the sequence of actions
+        return reconstructActionSequence(sites, parent, movedFacility, bestTarget, newFacility);
+    }
+
+    /**
+     * Reconstruct the list of actions from the arrays built during Dijkstra.
+     * I trace the path backwards from the target, then reverse it,
+     * so I know exactly which relocations happened and in what order.
+     * Finally I add the DirectInstall of the new facility.
+     */
+    private static List<Action> reconstructActionSequence(List<Site> sites,
+                                                          int[] parent,
+                                                          Facility[] movedFacility,
+                                                          int targetIndex,
+                                                          Facility newFacility) {
+        List<Integer> pathIndices = new ArrayList<>();
+        List<Facility> pathFacilities = new ArrayList<>();
+
+        int curr = targetIndex;
+        while (parent[curr] != -1) {
+            pathIndices.add(curr);
+            pathFacilities.add(movedFacility[curr]);
+            curr = parent[curr];
+        }
+        pathIndices.add(curr); // add the initially empty site
+
+        Collections.reverse(pathIndices);
+        Collections.reverse(pathFacilities);
+
+        List<Action> actions = new ArrayList<>();
+
+        // Add relocations along the path
+        for (int i = 1; i < pathIndices.size(); i++) {
+            Site from = sites.get(pathIndices.get(i));
+            Site to = sites.get(pathIndices.get(i - 1));
+            Facility f = pathFacilities.get(i - 1);
+            actions.add(new Action.RelocateAction(f, from, to));
         }
 
-        // Reconstruct how the empty slot traveled
-        List<Site> path = new ArrayList<>();
-        List<Facility> moved = new ArrayList<>();
-        int curIdx = bestTargetIdx;
-        while (true) {
-            Site curSite = sites.get(curIdx);
-            path.add(curSite);
-            Site p = parentSite[curIdx];
-            if (p == null) break;  // reached an initial empty site
-            moved.add(movedFromHere[curIdx]);
-            curIdx = indexOf.get(p);
-        }
-        Collections.reverse(path);
-        Collections.reverse(moved);
+        // Finally, install the new facility
+        Site finalSite = sites.get(targetIndex);
+        actions.add(new Action.DirectInstallAction(newFacility, finalSite));
 
-        // Translate that path into actions:
-        // For each hop, relocate the recorded facility,
-        // and at the end directly install the new facility.
-        List<Action> sequence = new ArrayList<>();
-        for (int i = 1; i < path.size(); i++) {
-            Site src = path.get(i);
-            Site dst = path.get(i - 1);
-            Facility y = moved.get(i - 1);
-            sequence.add(new Action.RelocateAction(y, src, dst));
-        }
-        Site target = path.get(path.size() - 1);
-        sequence.add(new Action.DirectInstallAction(newFacility, target));
-        return sequence;
+        return actions;
     }
 }
