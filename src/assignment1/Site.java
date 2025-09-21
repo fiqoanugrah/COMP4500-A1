@@ -11,7 +11,7 @@ public final class Site {
 
     // the identifier of the site
     private final int identifier;
-    // the maximum number of facilities that can be installed at the site at any one time
+    // the maximum anumber of facilities that can be installed at the site at any one time
     private final int capacity;
     // the facilities that have approval to be installed at the site
     private final HashSet<Facility> approved;
